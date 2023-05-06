@@ -1,0 +1,112 @@
+# 1
+SELECT country_code country, 
+count(distinct u.user_id) as number_of_users,
+count(distinct (case when operation_type='deposit' then b.user_id end)) as number_of_users_w_deposit,
+round(avg(case when operation_type='deposit' then operation_amount_usd end), 2) as avg_deposit,
+round(avg(case when operation_type='withdrawal' then operation_amount_usd end), 2) as avg_withdrawal
+FROM exness.users as u
+left join exness.balance as b on u.user_id=b.user_id 
+group by 1
+order by 2 desc
+
+# 2
+WITH max_user AS (
+	SELECT
+	 user_id, 
+     round(sum(profit_usd), 2) profit_usd, 
+     count(*) amount_of_deals, 
+     count(case when profit_usd>0 then 1 end) amount_of_profit_deals
+    FROM exness.orders
+    GROUP BY 1
+    ORDER BY 2 DESC
+    LIMIT 1 
+    ),
+    
+symbol_most_pop AS (
+SELECT o.user_id, symbol, count(*) as cnt
+FROM exness.orders AS o
+INNER JOIN max_user AS m on m.user_id=o.user_id
+GROUP BY 1, 2
+ORDER BY 3 desc
+limit 1
+	),
+
+symbol_highest_prof AS (
+SELECT o.user_id, symbol, sum(o.profit_usd) as profit_usd
+FROM exness.orders AS o
+INNER JOIN max_user AS m on m.user_id=o.user_id
+GROUP BY 1, 2
+ORDER BY 3 desc
+limit 1
+	),
+    
+symbol_highest_loss AS (
+SELECT o.user_id, symbol, sum(o.profit_usd) as profit_usd
+FROM exness.orders AS o
+INNER JOIN max_user AS m on m.user_id=o.user_id
+GROUP BY 1, 2
+ORDER BY 3 asc
+limit 1
+	)
+
+SELECT m.user_id, country_code country, m.profit_usd, amount_of_deals, amount_of_profit_deals,
+pop.symbol AS most_popular_symbol, p.symbol AS highest_profit, l.symbol AS highest_loss
+FROM max_user AS m
+INNER JOIN exness.users AS u ON u.user_id=m.user_id
+INNER JOIN symbol_most_pop AS pop ON pop.user_id=m.user_id
+INNER JOIN symbol_highest_prof AS p ON p.user_id=m.user_id
+INNER JOIN symbol_highest_loss AS l ON l.user_id=m.user_id
+
+
+
+# 3
+WITH deposit AS(
+	SELECT user_id, operation_time AS datetime_first_dep, operation_amount_usd AS amount_first_dep
+	FROM(
+		SELECT user_id, operation_time, operation_amount_usd,
+        row_number() OVER(PARTITION BY user_id ORDER BY operation_time asc) as rn
+		FROM exness.balance
+        WHERE operation_type='deposit'
+		) as a1
+	WHERE rn=1
+	),
+
+trade AS(
+	SELECT user_id, open_time datetime_first_trade, profit_usd profit_first_trade
+	FROM(
+		SELECT user_id, open_time, profit_usd,
+        row_number() OVER(PARTITION BY user_id ORDER BY open_time asc) as rn
+		FROM exness.orders 
+		) as a2
+	WHERE rn=1
+	),
+    
+dep_30_days AS(
+	SELECT u.user_id, 
+    sum(case when operation_type='deposit' then operation_amount_usd end) as deposit_30_days,
+    sum(case when operation_type='withdrawal' then operation_amount_usd end) as withdrawal_30_days
+    FROM exness.users AS u
+	LEFT JOIN exness.balance AS b on b.user_id=u.user_id
+    WHERE date(date_add(registration_time, interval 30 day))>=date(b.operation_time) 
+    GROUP BY 1
+),
+
+profit AS(
+	SELECT u.user_id, 
+    sum(case when date(date_add(registration_time, interval 30 day))>=date(o.close_time)  then profit_usd end) as profit_30_days,
+    sum(profit_usd) as profit_all
+    FROM exness.users AS u
+    LEFT JOIN exness.orders AS o on o.user_id=u.user_id 
+    GROUP BY 1
+    )
+ 
+
+	SELECT u.user_id, u.country_code, u.registration_time,
+	datetime_first_dep, datetime_first_trade, amount_first_dep, profit_first_trade,
+    round(profit_30_days, 2) profit_30_days, round(profit_all, 2) profit_all
+	FROM exness.users AS u
+	LEFT JOIN deposit AS d on d.user_id=u.user_id
+	LEFT JOIN trade AS t on t.user_id=u.user_id
+    LEFT JOIN dep_30_days AS d30 on d30.user_id=u.user_id
+    LEFT JOIN profit AS p on p.user_id=u.user_id
+ 
